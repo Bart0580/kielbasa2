@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Side-Scrolling Shooter</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: black; }
+    #ui {
+      position: absolute;
+      top: 0; left: 0;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: white;
+      font-size: 50px;
+      z-index: 10;
+      transform-origin: 0 0;
+    }
+    canvas {
+      display: block;
+      margin: auto;
+      background: black;
+      touch-action: none;
+    }
+    button { padding: 10px 20px; font-size: 50px; opacity: 0.5; pointer-events: auto; }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="ui">
+    <span>생명: <b id="lives">2</b></span>
+    <span>에너지: <b id="energy">5</b></span>
+    <span>점수: <b id="score">0</b></span>
+    <span>스테이지: <b id="stage">1</b></span>
+    <button id="pauseBtn">일시정지</button>
+    <button id="bgmBtn">BGM On</button>
+  </div>
+  <script>
+    const shootSound = new Audio('Game Shoot.wav'); shootSound.volume = 0.5;
+    let lastPlayerShot = 0;
+    const bgm = new Audio('LOOP.mp3'); bgm.loop = true; bgm.volume = 0.3;
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const DESIGN_WIDTH = 1280, DESIGN_HEIGHT = 720;
+
+    function resize() {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const aspect = DESIGN_WIDTH / DESIGN_HEIGHT;
+      let cw, ch;
+      if (vw / vh > aspect) {
+        ch = vh;
+        cw = ch * aspect;
+      } else {
+        cw = vw;
+        ch = cw / aspect;
+      }
+      canvas.style.width = cw + 'px';
+      canvas.style.height = ch + 'px';
+      canvas.width = DESIGN_WIDTH;
+      canvas.height = DESIGN_HEIGHT;
+
+      const ui = document.getElementById('ui');
+      const scale = cw / DESIGN_WIDTH;
+      const tx = (vw - cw) / 2;
+      const ty = (vh - ch) / 2;
+      ui.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    const PLAYER_SPEED = 5;
+    const INITIAL_BULLET_SPEED = 4;
+    const ENEMY_SPEED = 2;
+    const ENEMY_BULLET_SPEED = 4;
+    const ITEM_SPEED = 2;
+    const INITIAL_ENERGY = 5;
+    const BACKGROUND_SCROLL_SPEED = 1;
+    const MAX_STAGE = 10;
+    const AUTO_SHOOT_INTERVAL = 20;
+
+    let player, enemies = [], playerBullets = [], enemyBullets = [], items = [];
+    let lives = 2, energy = INITIAL_ENERGY, score = 0, item1Count = 0;
+    let bulletCount = 1, backgroundX = 0, stage = 1;
+    let paused = false;
+    let lifeScoreThreshold = 50;
+    let isBlinking = false, blinkStart = 0;
+    const keys = {};
+
+    let dragging = false;
+    let dragOffsetX = 0, dragOffsetY = 0;
+
+    const images = {};
+    const assetPaths = {
+      protagonist: 'protagonist.png',
+      enemy1: 'enemy1.png', enemy2: 'enemy2.png',
+      item1: 'item1.png', item2: 'item2.png',
+      background: 'background.png'
+    };
+    for (let k in assetPaths) { images[k] = new Image(); images[k].src = assetPaths[k]; }
+
+    class Player {
+      constructor() {
+        this.img = images.protagonist;
+        this.w = 80;
+        this.h = 80;
+        this.x = DESIGN_WIDTH * 0.1;
+        this.y = DESIGN_HEIGHT / 2 - this.h / 2;
+      }
+      update() {
+        if (keys.ArrowUp && this.y > 0) this.y -= PLAYER_SPEED;
+        if (keys.ArrowDown && this.y + this.h < DESIGN_HEIGHT) this.y += PLAYER_SPEED;
+        if (keys.ArrowLeft && this.x > 0) this.x -= PLAYER_SPEED;
+        if (keys.ArrowRight && this.x + this.w < DESIGN_WIDTH) this.x += PLAYER_SPEED;
+      }
+      draw() {
+        if (this.img.complete) ctx.drawImage(this.img, this.x, this.y, this.w, this.h);
+      }
+      shoot() {
+        const now = Date.now();
+        if (now - lastPlayerShot < 180) return;
+        lastPlayerShot = now;
+        shootSound.currentTime = 0;
+        shootSound.play().catch(() => {});
+        const speed = INITIAL_BULLET_SPEED * Math.pow(2, item1Count);
+        if (bulletCount === 1) {
+          playerBullets.push({ x: this.x + this.w, y: this.y + this.h/2, dx: speed, dy: 0 });
+        } else if (bulletCount === 2) {
+          playerBullets.push({ x: this.x + this.w, y: this.y + this.h/2-4, dx: speed, dy: -2 });
+          playerBullets.push({ x: this.x + this.w, y: this.y + this.h/2+4, dx: speed, dy: 2 });
+        } else {
+          playerBullets.push({ x: this.x + this.w, y: this.y + this.h/2, dx: speed, dy: 0 });
+          playerBullets.push({ x: this.x + this.w, y: this.y + this.h/2-6, dx: speed, dy: -3 });
+          playerBullets.push({ x: this.x + this.w, y: this.y + this.h/2+6, dx: speed, dy: 3 });
+        }
+      }
+    }
+
+    class Enemy {
+      constructor() {
+        this.img = Math.random() < 0.5 ? images.enemy1 : images.enemy2;
+        this.w = 80;
+        this.h = 80;
+        this.health = this.img === images.enemy1 ? 2 : 5;
+        this.x = DESIGN_WIDTH;
+        this.y = Math.random() * (DESIGN_HEIGHT - this.h);
+        this.timer = 0;
+      }
+      update() {
+        this.x -= ENEMY_SPEED;
+        this.timer++;
+        if (this.timer > AUTO_SHOOT_INTERVAL * 4 - (stage - 1) * 2) {
+          enemyBullets.push({ x: this.x, y: this.y + this.h/2, dx: -ENEMY_BULLET_SPEED, dy: 0 });
+          this.timer = 0;
+        }
+      }
+      draw() {
+        if (this.img.complete) ctx.drawImage(this.img, this.x, this.y, this.w, this.h);
+      }
+    }
+
+    class Item {
+      constructor() {
+        this.type = Math.random() < 0.5 ? 'item1' : 'item2';
+        this.img = images[this.type];
+        this.w = 48;
+        this.h = 48;
+        this.x = DESIGN_WIDTH;
+        this.y = Math.random() * (DESIGN_HEIGHT - this.h);
+      }
+      update() { this.x -= ITEM_SPEED; }
+      draw() { if (this.img.complete) ctx.drawImage(this.img, this.x, this.y, this.w, this.h); }
+    }
+
+    function isColliding(a, b, bw = b.w, bh = b.h) {
+      return a.x < b.x + bw && a.x + 6 > b.x && a.y < b.y + bh && a.y + 6 > b.y;
+    }
+    function updateUI() {
+      document.getElementById('lives').textContent = lives;
+      document.getElementById('energy').textContent = energy;
+      document.getElementById('score').textContent = score;
+      document.getElementById('stage').textContent = stage;
+    }
+
+    function init() {
+      player = new Player();
+      const pauseBtn = document.getElementById('pauseBtn');
+      pauseBtn.addEventListener('click', () => {
+        paused = !paused;
+        pauseBtn.textContent = paused ? '재개' : '일시정지';
+        if (!paused) requestAnimationFrame(loop);
+      });
+      const bgmBtn = document.getElementById('bgmBtn');
+      bgmBtn.addEventListener('click', () => {
+        if (bgm.paused) { bgm.play().catch(() => {}); bgmBtn.textContent = 'BGM Off'; }
+        else { bgm.pause(); bgmBtn.textContent = 'BGM On'; }
+      });
+      window.addEventListener('click', function startBgm() {
+        bgm.play().catch(() => {});
+        window.removeEventListener('click', startBgm);
+      });
+      window.addEventListener('keydown', e => { if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) keys[e.key] = true; });
+      window.addEventListener('keyup', e => { if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) keys[e
